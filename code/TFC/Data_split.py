@@ -1,6 +1,6 @@
-"""This file aims to generate a different data split to evaluate the stability of models.
-In each split, we select 30 positive and 30 negative samples to form a training set (60 samples in total).
-This is an example on Epilepsy dataset. -- Xiang Zhang, Jan 16, 2023"""
+"""本文件旨在生成不同的数据划分，以评估模型的稳定性。
+在每个划分中，我们选择 30 个正样本和 30 个负样本组成训练集（共 60 个样本）。
+这是针对 Epilepsy 数据集的示例。-- Xiang Zhang, 2023 年 1 月 16 日"""
 
 import torch
 import os
@@ -15,7 +15,8 @@ Labels = torch.cat((finetune_dataset['labels'], train_data['labels']), dim=0)
 
 train_size = 30
 
-"""Generate balanced training set"""
+"""生成平衡训练集"""
+
 id0 = Labels==0
 id1 = Labels==1
 
@@ -28,7 +29,7 @@ Samples_test = torch.cat((Samples_0[train_size:], Samples_1[train_size:]))
 Labels_train = torch.cat((Labels_0[:train_size], Labels_1[:train_size]))
 Labels_test = torch.cat((Labels_0[train_size:], Labels_1[train_size:]))
 
-# """Generate imbalanced training set"""
+# """生成不平衡训练集"""
 # data = list(zip(Samples, Labels))
 # np.random.shuffle(data)
 # X, y = zip(*data)
