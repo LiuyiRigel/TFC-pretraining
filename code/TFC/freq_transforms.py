@@ -1,4 +1,3 @@
-
 # Non-stationary frequency transforms for TFC training.
 # Provides differentiable alternatives to torch.fft for time-frequency analysis
 # of non-stationary signals (e.g., bearing vibration, EEG, EMG).
@@ -97,57 +96,102 @@ class MultiScaleFFT(nn.Module):
         out = out.reshape(B, C, T)
         return out
 
+    def get_2d_map(self, x):
+        """返回二维时频图 [n_freq, n_time] 用于可视化"""
+        B, C, T = x.shape
+        x_flat = x.reshape(B * C, T)
+        maps = []
+        weights = torch.softmax(self.scale_weights, dim=0)
+        max_freq_bins = max(w // 2 + 1 for w in self.window_sizes)
+        for i, win_size in enumerate(self.window_sizes):
+            stft_out = torch.stft(x_flat, n_fft=win_size, hop_length=self.stride,
+                                  win_length=win_size,
+                                  window=torch.hann_window(win_size, device=x.device),
+                                  return_complex=True, pad_mode='reflect')
+            mag = stft_out.abs().squeeze(0)  # [n_freq, n_time]
+            # Interpolate freq dimension to max_freq_bins via unsqueeze
+            if mag.shape[0] != max_freq_bins:
+                mag = mag.unsqueeze(0).unsqueeze(0)  # [1, 1, n_freq, n_time]
+                mag = torch.nn.functional.interpolate(
+                    mag, size=(max_freq_bins, mag.shape[-1]),
+                    mode='bilinear', align_corners=False
+                ).squeeze(0).squeeze(0)  # back to [n_freq, n_time]
+            maps.append(mag * weights[i])
+        return torch.stack(maps).mean(dim=0)
+
 
 # ==============================================================================
-# 2. CWT_Approx: 可学习的近似连续小波变换
+# 2. CWT_Approx v2: GMW wavelet filterbank (SSqueezepy-equivalent, differentiable)
 # ==============================================================================
 class CWT_Approx(nn.Module):
     """
-    Approximates Continuous Wavelet Transform using a learnable filter bank
-    of Morlet-like wavelets in the frequency domain.
+    Differentiable CWT using Generalized Morse Wavelet (GMW) filterbank.
 
-    This is FULLY DIFFERENTIABLE and produces a 1D frequency representation
-    by pooling over scales.
+    Matches SSqueezepy's cwt(wavelet='gmw') algorithm:
+      psi(ω) = U(ω) · ω^β · exp(-ω^γ)
+    where U(ω) is the Heaviside step function.
+
+    Improvements over v1:
+      - GMW kernel instead of simple Morlet (matches SSqueezepy)
+      - Vectorized computation (all scales processed in parallel)
+      - Higher default n_scales (96, equivalent to nv=16 for T=2048)
+      - L1-normalized wavelet responses
+      - Mean energy pooling (better than max for noisy signals)
 
     Shape: [B, C, T] -> [B, C, T]
-
-    Reference: SSqueezepy's cwt() core logic, translated to PyTorch.
     """
-    def __init__(self, n_samples=178, n_scales=32, wavelet='morlet',
-                 mu_init=6.0, sigma_init=1.0):
+
+    def __init__(self, n_samples=178, n_scales=96,
+                 beta_init=3.0, gamma_init=6.0,  # GMW parameters
+                 pooling='energy'):  # 'energy', 'max', 'weighted'
         super().__init__()
         self.n_samples = n_samples
         self.n_scales = n_scales
-        self.wavelet_type = wavelet
-
-        # Learnable scales (log-spaced)
-        log_scales = torch.linspace(np.log(1), np.log(n_samples // 2), n_scales)
-        self.scales = nn.Parameter(log_scales)  # log-scales, learnable
-
-        # Learnable frequency-domain wavelet parameters (Morlet-like)
-        # mu controls center frequency; sigma controls bandwidth
-        self.mu = nn.Parameter(torch.tensor(mu_init))
-        self.sigma = nn.Parameter(torch.tensor(sigma_init))
-        self.scale_factors = nn.Parameter(torch.ones(n_scales))
+        self.pooling = pooling
         self.eps = 1e-8
 
-    def _morlet_fd(self, freq, scale, mu, sigma):
-        """
-        Frequency-domain Morlet-like wavelet.
+        # Log-spaced scales (matching SSqueezepy 'log-piecewise')
+        # Scales from ~2 to n_samples/2
+        log_s_min = np.log(2.0)
+        log_s_max = np.log(n_samples / 2.0)
+        log_scales = torch.linspace(log_s_min, log_s_max, n_scales)
+        self.log_scales = nn.Parameter(log_scales)
 
-        psi(ω) = exp(-0.5 * σ² * (ω - μ/scale)²)
+        # GMW wavelet parameters (learnable)
+        # beta controls narrowness in time; gamma controls narrowness in frequency
+        self.beta = nn.Parameter(torch.tensor(beta_init))
+        self.gamma = nn.Parameter(torch.tensor(gamma_init))
+
+        # Per-scale amplitude factors (learnable, initialized to 1)
+        self.scale_factors = nn.Parameter(torch.ones(n_scales))
+
+        # Pooling weights (if pooling='weighted')
+        self.pool_weights = nn.Parameter(torch.ones(n_scales) / n_scales)
+
+    def _gmw_fd(self, omega, beta, gamma):
+        """
+        Frequency-domain GMW wavelet (non-zero for ω > 0 only).
+
+        psi(ω) = ω^β · exp(-ω^γ)  for ω > 0, else 0.
 
         Args:
-            freq: [T] or [1, T]  frequency bins (normalized, 0 to pi)
-            scale: scalar
-            mu: center frequency parameter
-            sigma: bandwidth parameter
+            omega: [n_scales, n_freq]  angular frequency (scaled by s)
+            beta: scalar
+            gamma: scalar
         Returns:
-            psi: same shape as freq
+            psi: [n_scales, n_freq]  complex wavelet in frequency domain
         """
-        center = mu / (scale + self.eps)
-        # Gaussian centered at mu/scale
-        psi = torch.exp(-0.5 * (sigma ** 2) * ((freq - center) ** 2))
+        # Heaviside step: only positive frequencies
+        pos = omega > 0
+        psi = torch.zeros_like(omega)
+
+        safe_omega = omega[pos]
+        psi[pos] = (safe_omega ** beta) * torch.exp(-safe_omega ** gamma)
+
+        # L1 normalize per scale
+        norm = psi.abs().sum(dim=-1, keepdim=True) / omega.shape[-1]
+        psi = psi / (norm + self.eps)
+
         return psi
 
     def forward(self, x):
@@ -158,42 +202,80 @@ class CWT_Approx(nn.Module):
             out: [B, C, T]  magnitude representation pooled over scales
         """
         B, C, T = x.shape
+        device = x.device
 
-        # Real FFT along time dimension
-        x_fft = torch.fft.rfft(x, dim=-1)  # [B, C, T//2+1]
-        n_freq = x_fft.shape[-1]
+        # Full FFT (complex) along time dimension
+        x_fft = torch.fft.fft(x, dim=-1)  # [B, C, T] complex
 
-        # Frequency axis (normalized)
-        freq = torch.linspace(0, np.pi, n_freq, device=x.device)  # [n_freq]
+        # Frequency axis (angular, 0 to 2π)
+        omega_1d = torch.linspace(0, 2 * np.pi, T, device=device)  # [T]
 
-        scales = torch.exp(self.scales)  # [n_scales], positive
+        # Scales (positive, from log-space)
+        scales = torch.exp(self.log_scales)  # [n_scales]
 
-        # Collect wavelet responses at each scale
-        scale_responses = []
-        for i in range(self.n_scales):
-            scale = scales[i]
-            sf = self.scale_factors[i]
+        # Ensure positivity
+        beta = torch.clamp(self.beta, 1.0, 20.0)
+        gamma = torch.clamp(self.gamma, 1.0, 20.0)
 
-            # Frequency-domain wavelet
-            psi = self._morlet_fd(freq, scale, self.mu, self.sigma)  # [n_freq]
+        # ---- Vectorized wavelet computation ----
+        # omega = outer(scales, omega_1d): [n_scales, T]
+        omega = scales.unsqueeze(1) * omega_1d.unsqueeze(0)  # [n_scales, T]
 
-            # Multiply with signal spectrum
-            filtered_fft = x_fft * psi * sf  # [B, C, n_freq]
+        # GMW wavelet in frequency domain: [n_scales, T]
+        psih = self._gmw_fd(omega, beta, gamma)
 
-            # Inverse FFT back to time domain -> get complex CWT row
-            filtered_time = torch.fft.irfft(filtered_fft, n=T, dim=-1)  # [B, C, T]
+        # Halve Nyquist bin for even T (SSqueezepy convention)
+        if T % 2 == 0:
+            psih[:, T // 2] = psih[:, T // 2] / 2.0
 
-            # Take magnitude
-            mag = filtered_time.abs()  # [B, C, T]
-            scale_responses.append(mag)
+        # Apply per-scale factors: [n_scales, 1, 1]
+        sf = self.scale_factors.view(self.n_scales, 1, 1)
 
-        # Stack: [B, C, n_scales, T] -> pool over scales
-        scale_stack = torch.stack(scale_responses, dim=2)  # [B, C, n_scales, T]
+        # Multiply in frequency domain: x_fft: [B, C, T] × psih: [n_scales, T]
+        # -> [B, C, n_scales, T] via broadcasting
+        filtered_fft = x_fft.unsqueeze(2) * psih.unsqueeze(0).unsqueeze(0) * sf
+        # [B, C, n_scales, T]
 
-        # Max-pool over scales (captures most responsive scale at each time point)
-        out = scale_stack.max(dim=2)[0]  # [B, C, T]
+        # IFFT back to time domain
+        filtered_time = torch.fft.ifft(filtered_fft, dim=-1)  # [B, C, n_scales, T]
+
+        # Magnitude
+        mag = filtered_time.abs()  # [B, C, n_scales, T]
+
+        # ---- Pool over scales to get [B, C, T] ----
+        if self.pooling == 'max':
+            out = mag.max(dim=2)[0]  # [B, C, T]
+        elif self.pooling == 'weighted':
+            w = torch.softmax(self.pool_weights, dim=0).view(1, 1, -1, 1)
+            out = (mag * w).sum(dim=2)  # [B, C, T]
+        else:  # 'energy' (default, SSqueezepy-like)
+            out = mag.mean(dim=2)  # [B, C, T]
 
         return out
+
+    def get_2d_map(self, x):
+        """返回二维时频图 [n_scales, n_time] 用于可视化"""
+        B, C, T = x.shape
+        device = x.device
+
+        x_fft = torch.fft.fft(x, dim=-1)
+        omega_1d = torch.linspace(0, 2 * np.pi, T, device=device)
+        scales = torch.exp(self.log_scales)
+        beta = torch.clamp(self.beta, 1.0, 20.0)
+        gamma = torch.clamp(self.gamma, 1.0, 20.0)
+
+        omega = scales.unsqueeze(1) * omega_1d.unsqueeze(0)
+        psih = self._gmw_fd(omega, beta, gamma)
+        if T % 2 == 0:
+            psih[:, T // 2] = psih[:, T // 2] / 2.0
+
+        sf = self.scale_factors.view(self.n_scales, 1, 1)
+        filtered_fft = x_fft.unsqueeze(2) * psih.unsqueeze(0).unsqueeze(0) * sf
+        filtered_time = torch.fft.ifft(filtered_fft, dim=-1)
+        # [B, C, n_scales, T] → take first batch, first channel
+        mag = filtered_time[0, 0].abs()  # [n_scales, T]
+
+        return mag.detach()
 
 
 # ==============================================================================
@@ -261,6 +343,16 @@ class STFT_Pool(nn.Module):
         out = mag_pooled.reshape(B, C, T)
         return out
 
+    def get_2d_map(self, x):
+        """返回二维时频图 [n_freq, n_time]"""
+        B, C, T = x.shape
+        x_flat = x.reshape(B * C, T)
+        stft_out = torch.stft(x_flat, n_fft=self.n_fft, hop_length=self.hop_length,
+                              win_length=self.n_fft,
+                              window=torch.hann_window(self.n_fft, device=x.device),
+                              return_complex=True, pad_mode='reflect')
+        return stft_out.abs().squeeze(0)
+
 
 # ==============================================================================
 # 4. EnvelopeFFT: 包络谱 + FFT 融合（滚动轴承故障检测常用）
@@ -321,6 +413,26 @@ class EnvelopeFFT(nn.Module):
         out = alpha_clamped * x_fft + (1 - alpha_clamped) * envelope_fft
 
         return out
+
+    def get_2d_map(self, x):
+        """返回二维时频图 [n_freq, n_time] — 包络的STFT"""
+        B, C, T = x.shape
+        x_fft_complex = torch.fft.fft(x, dim=-1)
+        n = T
+        mask = torch.zeros(n, device=x.device)
+        mask[0] = 1.0
+        mask[1:(n + 1) // 2] = 2.0
+        if n % 2 == 0:
+            mask[n // 2] = 1.0
+        mask = mask.view(1, 1, n)
+        x_analytic = torch.fft.ifft(x_fft_complex * mask, dim=-1)
+        envelope = x_analytic.abs()
+        x_flat = envelope.reshape(B * C, T)
+        stft_out = torch.stft(x_flat, n_fft=64, hop_length=16,
+                              win_length=64,
+                              window=torch.hann_window(64, device=x.device),
+                              return_complex=True, pad_mode='reflect')
+        return stft_out.abs().squeeze(0)
 
 
 # ==============================================================================
