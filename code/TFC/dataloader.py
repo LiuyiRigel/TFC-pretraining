@@ -23,7 +23,7 @@ def generate_freq(dataset, config):
     if X_train.shape.index(min(X_train.shape)) != 1:  # make sure the Channels in second dim
         X_train = X_train.permute(0, 2, 1)
 
-    """Align the TS length between source and target datasets"""
+    # """Align the TS length between source and target datasets"""
     X_train = X_train[:, :1, :int(config.TSlength_aligned)] # take the first 178 samples
 
     if isinstance(X_train, np.ndarray):
@@ -31,7 +31,7 @@ def generate_freq(dataset, config):
     else:
         x_data = X_train
 
-    """Transfer x_data to Frequency Domain using configurable transform."""
+    # """Transfer x_data to Frequency Domain using configurable transform."""
     freq_transform = get_freq_transform(
         config.freq_transform_type,
         n_samples=int(config.TSlength_aligned),
@@ -67,13 +67,13 @@ class Load_Dataset(Dataset):
         if X_train.shape.index(min(X_train.shape)) != 1:  # make sure the Channels in second dim
             X_train = X_train.permute(0, 2, 1)
 
-        """Align the TS length between source and target datasets"""
+        # """Align the TS length between source and target datasets"""
         X_train = X_train[:, :1, :int(config.TSlength_aligned)] # take the first 178 samples
 
-        """Subset for debugging"""
+        # """Subset for debugging"""
         if subset == True:
             subset_size = target_dataset_size * 10 #30 #7 # 60*1
-            """if the dimension is larger than 178, take the first 178 dimensions. If multiple channels, take the first channel"""
+            # """if the dimension is larger than 178, take the first 178 dimensions. If multiple channels, take the first channel"""
             X_train = X_train[:subset_size]
             y_train = y_train[:subset_size]
             print('Using subset for debugging, the datasize is:', y_train.shape[0])
@@ -85,7 +85,7 @@ class Load_Dataset(Dataset):
             self.x_data = X_train
             self.y_data = y_train
 
-        # """Transfer x_data to Frequency Domain using configurable transform.
+        # Transfer x_data to Frequency Domain using configurable transform.
 
         # Supported transforms (set via config.freq_transform_type):
         #     'fft'         - standard FFT (default, same as original)
@@ -93,7 +93,6 @@ class Load_Dataset(Dataset):
         #     'cwt_approx'  - CWT_Approx (learnable wavelet filterbank)
         #     'stft_pool'   - STFT_Pool (STFT magnitude pooled to 1D)
         #     'envelope'    - EnvelopeFFT (Hilbert envelope + FFT fusion)
-        # """
 
         window_length = self.x_data.shape[-1]
         freq_transform = get_freq_transform(
@@ -106,7 +105,7 @@ class Load_Dataset(Dataset):
             self.x_data_f = fft.fft(self.x_data).abs()
         self.len = X_train.shape[0]
 
-        """Augmentation"""
+        # """Augmentation"""
         if training_mode == "pre_train":  # no need to apply Augmentations in other modes
             self.aug1 = DataTransform_TD(self.x_data, config)
             self.aug1_f = DataTransform_FD(self.x_data_f, config) # [7360, 1, 90]
@@ -127,9 +126,9 @@ def data_generator(sourcedata_path, targetdata_path, configs, training_mode, sub
     train_dataset = torch.load(os.path.join(sourcedata_path, "train.pt"))
     finetune_dataset = torch.load(os.path.join(targetdata_path, "train.pt"))  # train.pt
     test_dataset = torch.load(os.path.join(targetdata_path, "test.pt"))  # test.pt
-    """In pre-training: 
-    train_dataset: [371055, 1, 178] from SleepEEG.    
-    finetune_dataset: [60, 1, 178], test_dataset: [11420, 1, 178] from Epilepsy"""
+    # """In pre-training: 
+    # train_dataset: [371055, 1, 178] from SleepEEG.    
+    # finetune_dataset: [60, 1, 178], test_dataset: [11420, 1, 178] from Epilepsy"""
 
     # subset = True # if true, use a subset for debugging.
     train_dataset = Load_Dataset(train_dataset, configs, training_mode, target_dataset_size=configs.batch_size, subset=subset) # for self-supervised, the data are augmented here
