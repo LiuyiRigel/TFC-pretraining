@@ -1,21 +1,21 @@
-"""
-Non-stationary frequency transforms for TFC training.
-Provides differentiable alternatives to torch.fft for time-frequency analysis
-of non-stationary signals (e.g., bearing vibration, EEG, EMG).
 
-All transforms:
-- Are PyTorch-native (fully differentiable, GPU-compatible)
-- Accept input shape [B, C, T] and output [B, C, T] (same as torch.fft.fft)
-- Are designed for the TFC contrastive learning framework
+# Non-stationary frequency transforms for TFC training.
+# Provides differentiable alternatives to torch.fft for time-frequency analysis
+# of non-stationary signals (e.g., bearing vibration, EEG, EMG).
 
-Transform options:
-1. MultiScaleFFT       - FFT with learnable multi-scale windowing
-2. CWT_Approx          - Approximate CWT via learnable filter bank (Morlet-like)
-3. STFT_Pool           - STFT magnitude pooled back to 1D (frequency-aware)
-4. HilbertFFT          - Hilbert-Huang inspired: envelope + FFT fusion
+# All transforms:
+# - Are PyTorch-native (fully differentiable, GPU-compatible)
+# - Accept input shape [B, C, T] and output [B, C, T] (same as torch.fft.fft)
+# - Are designed for the TFC contrastive learning framework
 
-Author: Adapted for TFC non-stationary signal analysis
-"""
+# Transform options:
+# 1. MultiScaleFFT       - FFT with learnable multi-scale windowing
+# 2. CWT_Approx          - Approximate CWT via learnable filter bank (Morlet-like)
+# 3. STFT_Pool           - STFT magnitude pooled back to 1D (frequency-aware)
+# 4. HilbertFFT          - Hilbert-Huang inspired: envelope + FFT fusion
+
+# Author: Adapted for TFC non-stationary signal analysis
+
 
 import torch
 import torch.nn as nn
