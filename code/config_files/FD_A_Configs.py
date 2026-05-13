@@ -43,6 +43,7 @@ class Config(object):
         self.num_classes_target = 3
         self.features_len_f = self.features_len
         self.CNNoutput_channel = 162
+        self.freq_transform_type = 'fft'  # 'fft', 'multiscale', 'cwt_approx', 'stft_pool', 'envelope'
 
 class augmentations(object):
     def __init__(self):

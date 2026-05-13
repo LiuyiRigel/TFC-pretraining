@@ -26,6 +26,9 @@ class Config(object):
         self.batch_size = 32 #64 #  128
         self.target_batch_size = 16 # the size of target dataset (the # of samples used to fine-tune).
 
+        # Frequency transform type: 'fft', 'multiscale', 'cwt_approx', 'stft_pool', 'envelope'
+        self.freq_transform_type = 'fft'
+
         self.Context_Cont = Context_Cont_configs()
         self.TC = TC()
         self.augmentation = augmentations()

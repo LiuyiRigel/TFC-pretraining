@@ -19,6 +19,9 @@ class Config(object):
 
         self.CNNoutput_channel = 10 # 90 # 10 for Epilepsy model
 
+        # Frequency transform type: 'fft', 'multiscale', 'cwt_approx', 'stft_pool', 'envelope'
+        self.freq_transform_type = 'fft'
+
         # training configs
         self.num_epoch = 40
 

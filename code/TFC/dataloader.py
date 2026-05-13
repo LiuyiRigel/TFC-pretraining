@@ -5,6 +5,7 @@ import os
 import numpy as np
 from augmentations import DataTransform_FD, DataTransform_TD
 import torch.fft as fft
+from freq_transforms import get_freq_transform
 
 def generate_freq(dataset, config):
     X_train = dataset["samples"]
@@ -30,11 +31,22 @@ def generate_freq(dataset, config):
     else:
         x_data = X_train
 
-    """Transfer x_data to Frequency Domain. If use fft.fft, the output has the same shape; if use fft.rfft, 
-    the output shape is half of the time window."""
+    """Transfer x_data to Frequency Domain using configurable transform."""
+    freq_transform = get_freq_transform(
+        config.freq_transform_type,
+        n_samples=int(config.TSlength_aligned),
+    )
 
-    x_data_f = fft.fft(x_data).abs() #/(window_length) # rfft for real value inputs.
+    if freq_transform is not None:
+        x_data_f = freq_transform(x_data)
+    else:
+        x_data_f = fft.fft(x_data).abs()
+
     return (X_train, y_train, x_data_f)
+
+
+
+
 
 class Load_Dataset(Dataset):
     # Initialize your data, download, etc.
@@ -73,11 +85,25 @@ class Load_Dataset(Dataset):
             self.x_data = X_train
             self.y_data = y_train
 
-        """Transfer x_data to Frequency Domain. If use fft.fft, the output has the same shape; if use fft.rfft, 
-        the output shape is half of the time window."""
+        # """Transfer x_data to Frequency Domain using configurable transform.
+
+        # Supported transforms (set via config.freq_transform_type):
+        #     'fft'         - standard FFT (default, same as original)
+        #     'multiscale'  - MultiScaleFFT (multi-resolution STFT)
+        #     'cwt_approx'  - CWT_Approx (learnable wavelet filterbank)
+        #     'stft_pool'   - STFT_Pool (STFT magnitude pooled to 1D)
+        #     'envelope'    - EnvelopeFFT (Hilbert envelope + FFT fusion)
+        # """
 
         window_length = self.x_data.shape[-1]
-        self.x_data_f = fft.fft(self.x_data).abs() #/(window_length) # rfft for real value inputs.
+        freq_transform = get_freq_transform(
+            getattr(config, 'freq_transform_type', 'fft'),
+            n_samples=window_length,
+        )
+        if freq_transform is not None:
+            self.x_data_f = freq_transform(self.x_data)
+        else:
+            self.x_data_f = fft.fft(self.x_data).abs()
         self.len = X_train.shape[0]
 
         """Augmentation"""
